@@ -1,13 +1,14 @@
 <template>
-  <a-modal
+  <j-modal
     :width="modalWidth"
     :visible="visible"
     :title="title"
+    switchFullscreen
+    wrapClassName="j-user-select-modal"
     @ok="handleSubmit"
     @cancel="close"
+    style="top:50px"
     cancelText="关闭"
-    style="margin-top: -70px"
-    wrapClassName="ant-modal-cust-warp"
   >
     <a-row :gutter="10" style="background-color: #ececec; padding: 10px; margin: -10px">
       <a-col :md="6" :sm="24">
@@ -17,9 +18,11 @@
             selectable
             :selectedKeys="selectedDepIds"
             :checkStrictly="true"
-            @select="onDepSelect"
             :dropdownStyle="{maxHeight:'200px',overflow:'auto'}"
             :treeData="departTree"
+            :expandAction="false"
+            :expandedKeys.sync="expandedKeys"
+            @select="onDepSelect"
           />
         </a-card>
       </a-col>
@@ -28,7 +31,7 @@
           用户账号:
           <a-input-search
             :style="{width:'150px',marginBottom:'15px'}"
-            placeholder="请输入用户账号"
+            placeholder="请输入账号"
             v-model="queryParam.username"
             @search="onSearch"
           ></a-input-search>
@@ -43,22 +46,24 @@
             :dataSource="dataSource"
             :pagination="ipagination"
             :rowSelection="{selectedRowKeys: selectedRowKeys, onChange: onSelectChange,type: getType}"
+            :loading="loading"
             @change="handleTableChange">
           </a-table>
         </a-card>
       </a-col>
     </a-row>
-  </a-modal>
+  </j-modal>
 </template>
 
 <script>
-  import {filterObj} from '@/utils/util'
+  import { pushIfNotExist, filterObj } from '@/utils/util'
   import {queryDepartTreeList, getUserList, queryUserByDepId} from '@/api/api'
+  import { getAction } from '@/api/manage'
 
   export default {
     name: 'JSelectUserByDepModal',
     components: {},
-    props: ['modalWidth', 'multi', 'userIds'],
+    props: ['modalWidth', 'multi', 'userIds', 'store', 'text'],
     data() {
       return {
         queryParam: {
@@ -71,14 +76,9 @@
             dataIndex: 'username'
           },
           {
-            title: '真实姓名',
+            title: '用户姓名',
             align: 'center',
             dataIndex: 'realname'
-          },
-          {
-            title: '角色名称',
-            align: 'center',
-            dataIndex: 'roleName'
           },
           {
             title: '性别',
@@ -95,18 +95,19 @@
             }
           },
           {
-            title: '手机号码',
+            title: '手机',
             align: 'center',
             dataIndex: 'phone'
           },
           {
-            title: '邮箱',
+            title: '部门',
             align: 'center',
-            dataIndex: 'email'
+            dataIndex: 'orgCodeTxt'
           }
         ],
         scrollTrigger: {},
         dataSource: [],
+        selectionRows: [],
         selectedRowKeys: [],
         selectUserRows: [],
         selectUserIds: [],
@@ -129,55 +130,71 @@
         selectedDepIds: [],
         departTree: [],
         visible: false,
-        form: this.$form.createForm(this)
+        form: this.$form.createForm(this),
+        loading: false,
+        expandedKeys: [],
       }
     },
     computed: {
       // 计算属性的 getter
       getType: function () {
-        console.log("multi: ", this.multi);
         return this.multi == true ? 'checkbox' : 'radio';
       }
     },
     watch: {
-      userIds() {
-        this.initUserNames()
-      }
+      userIds: {
+        immediate: true,
+        handler() {
+          this.initUserNames()
+        }
+      },
     },
     created() {
       // 该方法触发屏幕自适应
       this.resetScreenSize();
-      this.loadData().then((res) => {
-        this.initUserNames();
-      })
+      this.loadData()
     },
     methods: {
       initUserNames() {
-        let names = ''
-        console.log("props userIds: ", this.userIds)
         if (this.userIds) {
-          let currUserIds = this.userIds
-          for (let item of this.dataSource) {
-            if (currUserIds.indexOf(item.username) >= 0) {
-              names += "," + item.realname
+          // 这里最后加一个 , 的原因是因为无论如何都要使用 in 查询，防止后台进行了模糊匹配，导致查询结果不准确
+          let values = this.userIds.split(',') + ','
+          let param = {[this.store]: values}
+          getAction('/sys/user/getMultiUser', param).then((list)=>{
+            this.selectionRows = []
+            let selectedRowKeys = []
+            let textArray = []
+            if(list && list.length>0){
+              for(let user of list){
+                textArray.push(user[this.text])
+                selectedRowKeys.push(user['id'])
+                this.selectionRows.push(user)
+              }
             }
-          }
-          if (names) {
-            names = names.substring(1)
-          }
-          this.$emit("initComp", names)
+            this.selectedRowKeys = selectedRowKeys
+            this.$emit('initComp', textArray.join(','))
+          })
+
+        } else {
+          // JSelectUserByDep组件bug issues/I16634
+          this.$emit('initComp', '')
+          // 前端用户选择单选无法置空的问题 #2610
+          this.selectedRowKeys = []
         }
       },
       async loadData(arg) {
         if (arg === 1) {
           this.ipagination.current = 1;
         }
-        let params = this.getQueryParams();//查询条件
-        await getUserList(params).then((res) => {
+        let params = this.getQueryParams()//查询条件
+        this.loading = true
+        getAction('/sys/user/queryUserComponentData', params).then(res=>{
           if (res.success) {
-            this.dataSource = res.result.records;
-            this.ipagination.total = res.result.total;
+            this.dataSource = res.result.records
+            this.ipagination.total = res.result.total
           }
+        }).finally(() => {
+          this.loading = false
         })
       },
       // 触发屏幕自适应
@@ -192,6 +209,7 @@
       showModal() {
         this.visible = true;
         this.queryDepartTree();
+        this.initUserNames()
         this.loadData();
         this.form.resetFields();
       },
@@ -200,6 +218,7 @@
         param.field = this.getQueryField();
         param.pageNo = this.ipagination.current;
         param.pageSize = this.ipagination.pageSize;
+        param.departId = this.selectedDepIds.join(',')
         return filterObj(param);
       },
       getQueryField() {
@@ -211,13 +230,13 @@
       },
       searchReset(num) {
         let that = this;
+        that.selectedRowKeys = [];
+        that.selectUserIds = [];
+        that.selectedDepIds = [];
         if (num !== 0) {
           that.queryParam = {};
           that.loadData(1);
         }
-        that.selectedRowKeys = [];
-        that.selectUserIds = [];
-        that.selectedDepIds = [];
       },
       close() {
         this.searchReset(0);
@@ -235,53 +254,54 @@
       handleSubmit() {
         let that = this;
         this.getSelectUserRows();
-        console.log(that.selectUserRows)
-        that.$emit('ok', that.selectUserRows, that.selectUserIds);
+        that.$emit('ok', that.selectUserRows);
         that.searchReset(0)
         that.close();
       },
       //获取选择用户信息
-      getSelectUserRows(rowId) {
-        let dataSource = this.dataSource;
-        let userIds = "";
-        this.selectUserRows = [];
-        for (let i = 0, len = dataSource.length; i < len; i++) {
-          if (this.selectedRowKeys.includes(dataSource[i].id)) {
-            this.selectUserRows.push(dataSource[i]);
-            userIds = userIds + "," + dataSource[i].username
+      getSelectUserRows() {
+        this.selectUserRows = []
+        for (let row of this.selectionRows) {
+          if (this.selectedRowKeys.includes(row.id)) {
+            this.selectUserRows.push(row)
           }
         }
-        this.selectUserIds = userIds.substring(1);
+        this.selectUserIds = this.selectUserRows.map(row => row.username).join(',')
       },
       // 点击树节点,筛选出对应的用户
       onDepSelect(selectedDepIds) {
         if (selectedDepIds[0] != null) {
-          this.initQueryUserByDepId(selectedDepIds); // 调用方法根据选选择的id查询用户信息
           if (this.selectedDepIds[0] !== selectedDepIds[0]) {
             this.selectedDepIds = [selectedDepIds[0]];
           }
+          this.loadData(1);
         }
       },
       onSelectChange(selectedRowKeys, selectionRows) {
         this.selectedRowKeys = selectedRowKeys;
-        this.selectionRows = selectionRows;
+        selectionRows.forEach(row => pushIfNotExist(this.selectionRows, row, 'id'))
       },
       onSearch() {
         this.loadData(1);
       },
       // 根据选择的id来查询用户信息
       initQueryUserByDepId(selectedDepIds) {
-        queryUserByDepId({id: selectedDepIds.toString()}).then((res) => {
+        this.loading = true
+        return queryUserByDepId({id: selectedDepIds.toString()}).then((res) => {
           if (res.success) {
             this.dataSource = res.result;
             this.ipagination.total = res.result.length;
           }
+        }).finally(() => {
+          this.loading = false
         })
       },
       queryDepartTree() {
         queryDepartTreeList().then((res) => {
           if (res.success) {
             this.departTree = res.result;
+            // 默认展开父节点
+            this.expandedKeys = this.departTree.map(item => item.id)
           }
         })
       },
